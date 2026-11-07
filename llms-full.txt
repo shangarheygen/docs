@@ -6047,6 +6047,21 @@ results = await classifier.yes_no(
 
 `ClefClassifier`, `JevClassifier`, `OpenAIDecisionsClassifier` and `LLMClassifier` take images (the LLM behind an `LLMClassifier` must be able to see them). A classifier's `supports_images` property says whether it can, and one that cannot raises `ClassifierError` when given images.
 
+## Asking About Audio
+
+A classifier that can hear takes one clip of audio as `audio=`, a `ClassifierAudio` of 16-bit mono PCM. A classifier's `supports_audio` property says whether it can, and one that cannot raises `ClassifierError` when given a clip. Each classifier that hears declares how long a clip it accepts, and clips are resampled to the rate it needs. `HumeAudioClassifier` hears audio, and takes clips of 5 seconds to 5 minutes.
+
+```python
+from pipecat.classifiers.base_classifier import ClassifierAudio
+
+clip = ClassifierAudio(audio=pcm_bytes, sample_rate=16000)
+results = await classifier.yes_no(
+    "A caller on the phone.",
+    {"angry": YesNoQuestion(instructions="Does the caller sound angry?")},
+    audio=clip,
+)
+```
+
 ## Choosing a Classifier
 
 Every classifier Pipecat includes answers the same questions and returns the same results, so you can swap one for another.
@@ -10511,17 +10526,18 @@ The flag is set as the error is reported, so a handler reading `frame.processor.
 
 Errors carry a category saying what kind of failure it was, independent of which provider produced it:
 
-| Category          | Meaning                                                      |
-| ----------------- | ------------------------------------------------------------ |
-| `AUTHENTICATION`  | Credentials are missing or invalid                           |
-| `AUTHORIZATION`   | Credentials are valid but lack access to the resource        |
-| `INVALID_REQUEST` | The request is malformed, or names an unknown model or voice |
-| `RATE_LIMIT`      | Too many requests in too short a window                      |
-| `QUOTA`           | The account's credit or usage allowance is exhausted         |
-| `CONNECTIVITY`    | The service could not be reached                             |
-| `SERVER`          | The provider reported an internal failure                    |
-| `APPLICATION`     | The application failed, not the provider                     |
-| `UNKNOWN`         | The cause could not be determined                            |
+| Category           | Meaning                                                      |
+| ------------------ | ------------------------------------------------------------ |
+| `AUTHENTICATION`   | Credentials are missing or invalid                           |
+| `AUTHORIZATION`    | Credentials are valid but lack access to the resource        |
+| `INVALID_REQUEST`  | The request is malformed, or names an unknown model or voice |
+| `RATE_LIMIT`       | Too many requests in too short a window                      |
+| `QUOTA`            | The account's credit or usage allowance is exhausted         |
+| `CONNECTIVITY`     | The service could not be reached                             |
+| `SERVER`           | The provider reported an internal failure                    |
+| `APPLICATION`      | The application failed, not the provider                     |
+| `CONTENT_FILTERED` | The provider's content policy rejected the request           |
+| `UNKNOWN`          | The cause could not be determined                            |
 
 ```python
 from pipecat.utils.errors import ErrorCategory
@@ -10536,6 +10552,8 @@ from pipecat.utils.errors import ErrorCategory
   image message). Those failures say nothing about the service's own health, so
   they never make it unusable.
 </Note>
+
+`CONTENT_FILTERED` is also not permanent: the rejection concerns that request's content, so the service stays usable for the next one, but no response is coming for the rejected request. The OpenAI Chat Completions and Responses LLM services report an HTTP 400 with `code: content_filter` this way.
 
 ## Deciding what the pipeline does
 
@@ -16867,7 +16885,7 @@ uv add "pipecat-ai[tone]"
 Add `PipecatToneReader` between the STT service and the user aggregator:
 
 ```python
-from pipecat.processors.tone.reader import PipecatToneReader
+from pipecat.expressive.processors.tone_reader import PipecatToneReader
 
 pipeline = Pipeline(
     [
@@ -16902,7 +16920,7 @@ The reader's model downloads from Hugging Face the first time the pipeline start
 Pipecat Tone's tagger writes the tags for the LLM. The LLM is taught no tags, writes plain words, and the context keeps its replies plain. The tagger labels each sentence from the call so far and how the user sounded, in about 15 milliseconds on the CPU. Add `PipecatToneTagger` between the LLM and the TTS service:
 
 ```python
-from pipecat.processors.tone.tagger import PipecatToneTagger
+from pipecat.expressive.processors.tone_tagger import PipecatToneTagger
 
 pipeline = Pipeline(
     [
@@ -17142,7 +17160,7 @@ See the [KrispVivaTurn reference](/api-reference/server/utilities/turn-detection
 
 ## Interruption Prediction
 
-`KrispVivaIPUserTurnStartStrategy` uses Krisp's Interruption Prediction (IP) model to distinguish genuine user interruptions from backchannels. When VAD detects user speech, the IP model analyzes the audio and outputs a probability indicating whether the speech is a real interruption or a brief acknowledgement (e.g., "uh-huh", "yeah").
+`KrispVivaIPUserTurnStartStrategy` uses Krisp's Interruption Prediction (IP) model to distinguish genuine user interruptions from backchannels. While the bot is speaking, the IP model analyzes the audio when VAD detects user speech and outputs a probability indicating whether the speech is a real interruption or a brief acknowledgement (e.g., "uh-huh", "yeah").
 
 This prevents the bot from being interrupted unnecessarily by short utterances. Configure it as a user turn start strategy:
 
@@ -28453,7 +28471,7 @@ If you require your agent to fetch it's own data, be mindful of any blocking req
 
 The maximum body size depends on the transport:
 
-- `transport: "daily"` or `"webrtc"` — **1 MB of JSON**
+- `transport: "daily"`, `"webrtc"` or `"moq"` — **1 MB of JSON**
 - `transport: "websocket"` — **4 KB of JSON**
 
 Requests exceeding the per-transport limit are rejected with `413 Payload Too Large` before any bot is started.
@@ -31263,6 +31281,158 @@ The basic flow is handled for you, allowing you to focus on building your agent'
   </Card>
 </CardGroup>
 
+# Pipecat Cloud Media over QUIC
+Source: https://docs.pipecat.ai/pipecat-cloud/guides/moq.md
+
+Pipecat Cloud agents over Media over QUIC: /start with transport moq, the JavaScript MoqTransport, and MOQSessionArguments in the bot.
+
+Media over QUIC (MoQ) connects a browser to your Pipecat Cloud agent through the MoQ relays in the agent's region. The browser's audio and RTVI messages travel over WebTransport, with a WebSocket fallback, and your agent reaches the region's relays from inside Pipecat Cloud. Pipecat Cloud runs the relays and issues each session's credentials, so there is no relay to deploy and no token to mint.
+
+MoQ is a browser transport. For telephony and server-to-server links, use the [generic WebSocket endpoint](/pipecat-cloud/guides/generic-websocket); for Daily rooms, see [Daily WebRTC](/pipecat-cloud/guides/daily-webrtc).
+
+## Requirements
+
+Your agent image needs:
+
+- `pipecat-ai[moq]` 1.13.0 or newer.
+- The Pipecat Cloud base image `dailyco/pipecat-base` 0.2.7 or newer. Name the version in your Dockerfile's `FROM` rather than relying on `latest`: a cloud build can get the previous base image for up to a day after a release.
+- `pipecatcloud` 1.3.0 or newer, if your image installs its own rather than using the one the base image provides.
+
+Your browser client needs `@pipecat-ai/client-js` 1.16 and `@pipecat-ai/moq-transport` 0.3.3 or newer.
+
+<Note>
+  Pipecat Cloud starts a MoQ session only for an agent whose current deployment
+  can serve one. While a new deployment rolls out or reports what it can serve,
+  `/start` with `transport: "moq"` can return `409 Conflict`: retry. An image
+  that can't serve MoQ gets `400 Bad Request`, with a message that says what to
+  rebuild. See [Errors](#errors).
+</Note>
+
+## Bot code
+
+Add the `moq` extra to your requirements:
+
+```text requirements.txt
+pipecat-ai[moq]>=1.13.0
+```
+
+For a MoQ session, the base image passes your `bot()` a `MOQSessionArguments`, which subclasses `pipecat-ai`'s `MOQRunnerArguments`. `create_transport` takes the `"moq"` entry for it and dials the relay, so one agent can serve MoQ beside its other transports:
+
+```python bot.py
+from pipecat.runner.types import RunnerArguments
+from pipecat.runner.utils import create_transport
+from pipecat.transports.moq.transport import MOQParams
+
+transport_params = {
+    "moq": lambda: MOQParams(
+        audio_in_enabled=True,
+        audio_out_enabled=True,
+    ),
+}
+
+
+async def bot(runner_args: RunnerArguments):
+    transport = await create_transport(runner_args, transport_params)
+    # Build and run your pipeline with `transport`, as with any other transport.
+```
+
+The relay URL the bot dials carries the session's credential. `MOQSessionArguments` keeps it out of its `repr`; keep it out of your own logs too. See [Session arguments](/api-reference/pipecat-cloud/sdk-reference/session-arguments#moqsessionarguments) for the fields.
+
+## Starting a session
+
+Start a session with `transport: "moq"`. As with the other transports, `body` reaches your bot as `runner_args.body`:
+
+```bash
+curl -X POST "https://api.pipecat.daily.co/v1/public/my-agent/start" \
+  -H "Authorization: Bearer pk_your_public_key" \
+  -H "Content-Type: application/json" \
+  -d '{"transport": "moq", "body": {"greeting": "hello"}}'
+```
+
+The response carries everything the browser transport needs under a `moq` key:
+
+```json
+{
+  "sessionId": "639f91d8-d511-4677-a83b-bd7564d5d92f",
+  "moq": {
+    "relayUrl": "https://us-west.moq.pipecat.daily.co/?jwt=eyJhbGciOiJFUzI1NiIs...",
+    "certHash": null,
+    "namespace": "pcc/639f91d8-d511-4677-a83b-bd7564d5d92f",
+    "clientId": "request",
+    "botId": "response",
+    "transcriptTrack": "transcript.json.z"
+  }
+}
+```
+
+- `relayUrl` reaches the MoQ relays in your agent's region, with the browser's credential for this session in its query string. Treat it as a secret. It stays valid for the agent's maximum session duration.
+- `certHash` is `null`: the relays use publicly trusted certificates, so there is nothing to pin.
+- `namespace`, `clientId` and `botId` place the browser and the bot in the session: the browser publishes under `<namespace>/<clientId>` and subscribes to `<namespace>/<botId>`, and the bot the reverse.
+
+A MoQ session has no Daily room and no ICE servers, so `createDailyRoom` and `enableDefaultIceServers` can't be set to `true` with `transport: "moq"`. Sending either as `false`, its default, is fine.
+
+## Connecting from the browser
+
+The JavaScript SDK's `MoqTransport` reads the `/start` response's `moq` block itself, so `startBotAndConnect()` can call `/start` and connect in one step:
+
+```javascript
+import { PipecatClient } from "@pipecat-ai/client-js";
+import { MoqTransport } from "@pipecat-ai/moq-transport";
+
+const client = new PipecatClient({
+  // relayUrl is required by the type; the /start response replaces it
+  transport: new MoqTransport({ relayUrl: "" }),
+});
+
+await client.startBotAndConnect({
+  endpoint: "https://api.pipecat.daily.co/v1/public/my-agent/start",
+  headers: new Headers({ Authorization: "Bearer pk_your_public_key" }),
+  requestData: { transport: "moq", body: { greeting: "hello" } },
+});
+```
+
+See the [MoQ transport reference](/api-reference/client/js/transports/moq) for its options and events.
+
+## Reconnects
+
+Pipecat Cloud drains a relay before replacing it, so relay updates don't interrupt sessions.
+
+If a relay fails, both sides reconnect to another relay in the region on their own, and the session normally continues: the browser transport keeps trying for up to 60 seconds by default (`relayRetryTimeoutMs`), and the bot's transport for its `connection_timeout`. Audio stops until both sides are back, typically for around 15 seconds, and RTVI messages sent meanwhile are delivered once each, in order.
+
+## Errors
+
+A `/start` with `transport: "moq"` can be refused before any session starts. The message says what to change.
+
+`409 Conflict` means retry:
+
+- The agent's latest deployment hasn't finished reporting what it can serve. This can take a few minutes after a deploy; retry with backoff.
+- A new deployment is still rolling out, or the latest one failed while the previous one keeps serving. Retry once a deployment has completed.
+
+`400 Bad Request` means change the agent or the request:
+
+- The agent's current deployment can't serve MoQ: for example, its image is older than `pipecat-base` 0.2.7, its `pipecat-ai` is older than 1.13.0, or the `moq` extra isn't installed. Rebuild on the [requirements](#requirements) above and deploy again.
+- The request also sets `createDailyRoom` or `enableDefaultIceServers` to `true`.
+- MoQ isn't offered in the agent's region. Deploy the agent to a Daily-hosted [region](/pipecat-cloud/guides/regions).
+
+## Related
+
+<CardGroup cols={2}>
+  <Card
+    title="MoQ transport (JavaScript)"
+    icon="js"
+    href="/api-reference/client/js/transports/moq"
+  >
+    The JavaScript `MoqTransport`: options, events and connection states.
+  </Card>
+  <Card
+    title="MoQ transport (server)"
+    icon="python"
+    href="/api-reference/server/services/transport/moq"
+  >
+    `MOQTransport` and `MOQParams` in the Pipecat framework.
+  </Card>
+</CardGroup>
+
 # Krisp VIVA on Pipecat Cloud
 Source: https://docs.pipecat.ai/pipecat-cloud/guides/krisp-viva.md
 
@@ -32607,12 +32777,12 @@ Thresholds re-arm each billing period, so an organization sitting at a zero limi
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `session.started` | An agent session starts. For WebSocket transport this fires when the API hands out the session token, not when the bot is live. |
 
-| Field        | Type             | Notes                                                                                   |
-| ------------ | ---------------- | --------------------------------------------------------------------------------------- |
-| `session_id` | string           |                                                                                         |
-| `service`    | string           | The service name. Spelled `service`, not `service_name`; see the exception noted above. |
-| `region`     | string           |                                                                                         |
-| `transport`  | string, optional | `daily`, `webrtc`, or `websocket`. Absent when no transport was specified or implied.   |
+| Field        | Type             | Notes                                                                                        |
+| ------------ | ---------------- | -------------------------------------------------------------------------------------------- |
+| `session_id` | string           |                                                                                              |
+| `service`    | string           | The service name. Spelled `service`, not `service_name`; see the exception noted above.      |
+| `region`     | string           |                                                                                              |
+| `transport`  | string, optional | `daily`, `webrtc`, `websocket`, or `moq`. Absent when no transport was specified or implied. |
 
 ```json session.started
 {
@@ -32763,7 +32933,7 @@ Your bot code is responsible for handling the client's message format. Use the a
 
 ## Passing parameters to the bot
 
-You can pass arbitrary JSON to your bot at session start via a `?body=` query parameter on the WebSocket URL. The value must be base64-encoded JSON, URL-encoded when you add it to the URL: base64 can contain `+`, which a query string reads as a space. In Python, `urllib.parse.urlencode` does this; in JavaScript, `URLSearchParams` or `encodeURIComponent`. Your bot receives the decoded original through `args.body` — the same way it works for `daily` and `webrtc` transports. See [Passing data](/pipecat-cloud/fundamentals/active-sessions#passing-data) for examples in your bot code.
+You can pass arbitrary JSON to your bot at session start via a `?body=` query parameter on the WebSocket URL. The value must be base64-encoded JSON, URL-encoded when you add it to the URL: base64 can contain `+`, which a query string reads as a space. In Python, `urllib.parse.urlencode` does this; in JavaScript, `URLSearchParams` or `encodeURIComponent`. Your bot receives the decoded original through `args.body` — the same way it works for the `daily`, `webrtc` and `moq` transports. See [Passing data](/pipecat-cloud/fundamentals/active-sessions#passing-data) for examples in your bot code.
 
 How you assemble the URL depends on your service's `websocket_auth` setting.
 
@@ -32816,7 +32986,7 @@ async with websockets.connect(url) as ws:
 ```
 
 <Note>
-  Maximum body size is **4 KB of JSON**, measured before base64 and URL-encoding. That is smaller than the 1 MB cap for `daily` and `webrtc` transports because the body travels as a URL query parameter on the WebSocket upgrade, which is bounded by the receiving server's URL-length limit. The same cap applies whether the body is encoded by `/start` or by your own client code.
+  Maximum body size is **4 KB of JSON**, measured before base64 and URL-encoding. That is smaller than the 1 MB cap for the `daily`, `webrtc` and `moq` transports because the body travels as a URL query parameter on the WebSocket upgrade, which is bounded by the receiving server's URL-length limit. The same cap applies whether the body is encoded by `/start` or by your own client code.
 
 A long body made mostly of certain non-ASCII characters, such as half-width katakana or full-width letters, can encode longer than an agent accepts. The connection then closes with code `1009` and a reason stating the length the agent accepts. Redeploying the agent on pipecat-base 0.1.14 or later raises that length to cover the whole cap.
 
@@ -37322,11 +37492,12 @@ Audio filters reduce background noise and isolate the speaker's voice in the inp
 
 Classifiers answer typed questions about some state, such as whether a call reached voicemail or which element on screen the user means. See [Pipecat Classifiers](/pipecat/learn/classifiers).
 
-| Classifier                                     | Setup                             | Maintainer |
-| ---------------------------------------------- | --------------------------------- | ---------- |
-| [Clef](/api-reference/server/classifiers/clef) | `uv add "pipecat-ai[cloudflare]"` | Pipecat    |
-| [Jev](/api-reference/server/classifiers/jev)   | `uv add "pipecat-ai[typesafe]"`   | Pipecat    |
-| [LLM](/api-reference/server/classifiers/llm)   | Built in                          | Pipecat    |
+| Classifier                                                 | Setup                             | Maintainer |
+| ---------------------------------------------------------- | --------------------------------- | ---------- |
+| [Clef](/api-reference/server/classifiers/clef)             | `uv add "pipecat-ai[cloudflare]"` | Pipecat    |
+| [Hume Audio](/api-reference/server/classifiers/hume-audio) | `uv add "pipecat-ai[hume]"`       | Pipecat    |
+| [Jev](/api-reference/server/classifiers/jev)               | `uv add "pipecat-ai[typesafe]"`   | Pipecat    |
+| [LLM](/api-reference/server/classifiers/llm)               | Built in                          | Pipecat    |
 
 ## Composite Services
 
@@ -37454,6 +37625,7 @@ Serializers convert between frames and media streams, enabling real-time communi
 | [Exotel](/api-reference/server/services/serializers/exotel)         | Built in                    | Pipecat    |
 | [FreeSWITCH](/api-reference/server/services/serializers/freeswitch) | `uv add pipecat-freeswitch` | Community  |
 | [Genesys](/api-reference/server/services/serializers/genesys)       | Built in                    | Pipecat    |
+| [jambonz](/api-reference/server/services/serializers/jambonz)       | Built in                    | Pipecat    |
 | [Plivo](/api-reference/server/services/serializers/plivo)           | Built in                    | Pipecat    |
 | [Telnyx](/api-reference/server/services/serializers/telnyx)         | Built in                    | Pipecat    |
 | [Twilio](/api-reference/server/services/serializers/twilio)         | Built in                    | Pipecat    |
@@ -37536,7 +37708,7 @@ Text-to-Speech services receive text input and output audio streams or chunks.
 | [Groq](/api-reference/server/services/tts/groq)                   | `uv add "pipecat-ai[groq]"`                                                           | Pipecat    |
 | [Hakim](/api-reference/server/services/tts/hakim)                 | `uv pip install git+https://github.com/tryHakimAI/hakim-pipecat.git`                  | Community  |
 | [HeyGen](/api-reference/server/services/tts/heygen)               | `uv add pipecat-ai`                                                                   | Pipecat    |
-| [Hume](/api-reference/server/services/tts/hume)                   | `uv add "pipecat-ai[hume]"`                                                           | Pipecat    |
+| [Hume](/api-reference/server/services/tts/hume) (deprecated)      | `uv add "pipecat-ai[hume]"`                                                           | Pipecat    |
 | [Inworld](/api-reference/server/services/tts/inworld)             | `uv add "pipecat-ai[inworld]"`                                                        | Pipecat    |
 | [Kalpa](/api-reference/server/services/tts/kalpa)                 | `uv add pipecat-kalpa`                                                                | Community  |
 | [Kokoro](/api-reference/server/services/tts/kokoro)               | `uv add "pipecat-ai[kokoro]"`                                                         | Pipecat    |
@@ -43779,6 +43951,130 @@ A typical session follows this sequence:
 - **Pause/resume**: When Genesys pauses the stream (e.g., caller placed on hold) it sends `paused`, and the serializer drops incoming and outgoing audio until Genesys sends `resumed`. Use `create_pause_request()` and `create_resume_request()` to ask Genesys to pause or resume.
 - **Output variables**: Variables set via `set_output_variables()` are included in the `closed` response when Genesys terminates the session. These variables become available in the Architect flow for routing decisions.
 - **L16 format**: The serializer accepts `AudioHookMediaFormat.L16` as a configuration option but drops all audio in both directions with it. Use PCMU (the default).
+
+# jambonz Frame Serializer
+Source: https://docs.pipecat.ai/api-reference/server/services/serializers/jambonz.md
+
+JambonzFrameSerializer connects Pipecat pipelines to phone calls on jambonz through the listen verb's raw PCM WebSocket protocol.
+
+## Overview
+
+`JambonzFrameSerializer` connects a Pipecat pipeline to calls on [jambonz](https://jambonz.org) through the `listen` verb's WebSocket protocol. Audio is raw 16-bit signed little-endian mono PCM, and the call's sample rate is read from the preamble jambonz sends when the socket opens, so it needs no configuration.
+
+<CardGroup cols={2}>
+  <Card
+    title="jambonz Serializer API Reference"
+    icon="code"
+    href="https://reference-server.pipecat.ai/en/latest/api/pipecat.serializers.jambonz.html"
+  >
+    Pipecat's API methods for jambonz WebSocket integration
+  </Card>
+  <Card
+    title="jambonz listen Verb"
+    icon="book"
+    href="https://docs.jambonz.org/verbs/verbs/listen"
+  >
+    Official jambonz documentation for the `listen` verb
+  </Card>
+</CardGroup>
+
+## Installation
+
+The `JambonzFrameSerializer` does not require any additional dependencies beyond the core Pipecat library:
+
+```bash
+uv add "pipecat-ai"
+```
+
+## Prerequisites
+
+1. **A jambonz account or server** with an application that runs the `listen` verb.
+2. **A public WebSocket URL** for your bot, which the verb's `url` points to.
+
+### listen Verb
+
+The verb needs three settings stated explicitly:
+
+```json
+{
+  "verb": "listen",
+  "url": "wss://your-bot.example.com/ws",
+  "sampleRate": 16000,
+  "mixType": "mono",
+  "bidirectionalAudio": {
+    "enabled": true,
+    "streaming": true,
+    "sampleRate": 16000
+  }
+}
+```
+
+- `bidirectionalAudio.streaming` defaults to `false`. While it is, audio sent back is ignored and the caller hears nothing.
+- `sampleRate` defaults to `8000`. Other allowed values are 16000, 24000, 48000 and 64000.
+- `bidirectionalAudio.sampleRate` has no default. Set it to the same value as `sampleRate`: the serializer sends audio at the `sampleRate` from the preamble, so a mismatch plays back too fast or too slow.
+- `mixType` must be `mono`. Audio is dropped with a warning for `stereo` or `mixed`.
+- Set `passDtmf` to receive keypad digits as `InputDTMFFrame`.
+
+## Configuration
+
+<ParamField
+  path="params"
+  type="JambonzFrameSerializer.InputParams | None"
+  default="None"
+>
+  Configuration parameters. See [InputParams](#inputparams) below.
+</ParamField>
+
+### InputParams
+
+| Parameter                    | Type            | Default | Description                                                                                                                                            |
+| ---------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `jambonz_sample_rate`        | `int \| None`   | `None`  | Overrides the rate jambonz forks audio at. When `None`, the rate comes from the connection's preamble.                                                 |
+| `sample_rate`                | `int \| None`   | `None`  | Optional override for the pipeline input sample rate. When `None`, uses the pipeline's configured rate.                                                |
+| `disconnect_on_end`          | `bool`          | `True`  | Sends `disconnect` when the pipeline ends, which ends the `listen` verb so jambonz runs the verb's `actionHook` or hangs up. Needs no API credentials. |
+| `ignore_rtvi_messages`       | `bool`          | `True`  | Whether to ignore RTVI protocol messages during serialization.                                                                                         |
+| `resampler_clear_after_secs` | `float \| None` | `None`  | Seconds of inactivity after which the stream resampler clears its internal history. `None` never clears.                                               |
+
+### Properties
+
+Populated from the preamble once it arrives.
+
+| Property              | Type             | Description                                |
+| --------------------- | ---------------- | ------------------------------------------ |
+| `jambonz_sample_rate` | `int \| None`    | The rate jambonz is forking the call at.   |
+| `mix_type`            | `str \| None`    | The channel layout stated in the preamble. |
+| `call_sid`            | `str \| None`    | The jambonz call identifier.               |
+| `trace_id`            | `str \| None`    | The jambonz trace identifier.              |
+| `call_meta`           | `dict[str, Any]` | A copy of the full preamble.               |
+
+## Usage
+
+### Basic Setup
+
+```python
+from pipecat.serializers.jambonz import JambonzFrameSerializer
+from pipecat.transports.websocket.fastapi import (
+    FastAPIWebsocketParams,
+    FastAPIWebsocketTransport,
+)
+
+serializer = JambonzFrameSerializer()
+
+transport = FastAPIWebsocketTransport(
+    websocket=websocket,
+    params=FastAPIWebsocketParams(
+        audio_in_enabled=True,
+        audio_out_enabled=True,
+        serializer=serializer,
+    ),
+)
+```
+
+## Notes
+
+- **Interruptions**: An `InterruptionFrame` sends `killAudio`, which flushes audio jambonz is playing or has buffered.
+- **DTMF support**: With `passDtmf` set on the verb, digits are converted to `InputDTMFFrame` objects. `mark` and `playDone` events are ignored.
+- **Preamble first**: Audio that arrives before the preamble is dropped.
 
 # Plivo Frame Serializer
 Source: https://docs.pipecat.ai/api-reference/server/services/serializers/plivo.md
@@ -52419,7 +52715,7 @@ SonioxSTTService streams real-time STT over Soniox's WebSocket API: 60+ language
 
 `SonioxSTTService` provides real-time speech-to-text transcription using Soniox's WebSocket API with support for over 60 languages, custom context, multiple languages in the same conversation, and advanced features for accurate multilingual transcription.
 
-By default, Soniox uses the `stt-rt-v5` model with `vad_force_turn_endpoint=True`, where Pipecat's user turn strategies decide turn endings and the local VAD finalizes transcripts early. This configuration significantly reduces the time to final segment (~250ms median). Pipecat enables smart-turn detection by default using `LocalSmartTurnAnalyzerV3`. To use Soniox's native turn detection instead, set `vad_force_turn_endpoint=False`.
+By default, Soniox uses the `stt-rt-v6` model with `vad_force_turn_endpoint=True`, where Pipecat's user turn strategies decide turn endings and the local VAD finalizes transcripts early. This configuration significantly reduces the time to final segment (~250ms median). Pipecat enables smart-turn detection by default using `LocalSmartTurnAnalyzerV3`. To use Soniox's native turn detection instead, set `vad_force_turn_endpoint=False`.
 
 <CardGroup cols={2}>
   <Card
@@ -52556,19 +52852,22 @@ Before using Soniox STT services, you need:
 
 Runtime-configurable settings passed via the `settings` constructor argument using `SonioxSTTService.Settings(...)`. These can be updated mid-conversation with `STTUpdateSettingsFrame`. See [Service Settings](/pipecat/fundamentals/service-settings) for details.
 
-| Parameter                           | Type                         | Default       | Description                                                                                                                                                                                                        |
-| ----------------------------------- | ---------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `model`                             | `str`                        | `"stt-rt-v5"` | Model to use for transcription. _(Inherited from base STT settings.)_                                                                                                                                              |
-| `language`                          | `Language \| str`            | `None`        | Language for speech recognition. Replaces `language_hints` with this one language, unless the same `Settings` or update also sets `language_hints`. _(Inherited from base STT settings.)_                          |
-| `language_hints`                    | `list[Language]`             | `None`        | Language hints for transcription. Helps the model prioritize expected languages.                                                                                                                                   |
-| `language_hints_strict`             | `bool`                       | `None`        | If true, strictly enforce language hints (only transcribe in provided languages).                                                                                                                                  |
-| `context`                           | `SonioxContextObject \| str` | `None`        | Customization for transcription. Either a `SonioxContextObject` (structured context for steering transcription and translation) or a plain string of background text. Soniox caps the context object at 8k tokens. |
-| `enable_speaker_diarization`        | `bool`                       | `False`       | Enable speaker diarization. Tokens are annotated with speaker IDs.                                                                                                                                                 |
-| `enable_language_identification`    | `bool`                       | `False`       | Enable language identification. Tokens are annotated with language IDs, and the detected language is included in the final `TranscriptionFrame`.                                                                   |
-| `max_endpoint_delay_ms`             | `int`                        | `None`        | Maximum delay in milliseconds after speech ends before endpoint detection returns an endpoint. Valid range: 500-3000.                                                                                              |
-| `endpoint_sensitivity`              | `float`                      | `None`        | Endpoint detection sensitivity (-1.0 to 1.0); higher values finalize turns sooner, lower values delay finalization. Introduced in the v5 model.                                                                    |
-| `endpoint_latency_adjustment_level` | `int`                        | `None`        | Reduces endpoint latency vs. the default (0-3); higher values finalize turns sooner but may reduce accuracy.                                                                                                       |
-| `client_reference_id`               | `str`                        | `None`        | Client reference ID for transcription tracking.                                                                                                                                                                    |
+| Parameter                           | Type                         | Default       | Description                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | ---------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`                             | `str`                        | `"stt-rt-v6"` | Model to use for transcription. _(Inherited from base STT settings.)_                                                                                                                                                                                                                                                                                                                    |
+| `language`                          | `Language \| str`            | `None`        | Language for speech recognition. Replaces `language_hints` with this one language, unless the same `Settings` or update also sets `language_hints`. _(Inherited from base STT settings.)_                                                                                                                                                                                                |
+| `language_hints`                    | `list[Language]`             | `None`        | Language hints for transcription. Helps the model prioritize expected languages.                                                                                                                                                                                                                                                                                                         |
+| `language_hints_strict`             | `bool`                       | `None`        | If true, strictly enforce language hints (only transcribe in provided languages).                                                                                                                                                                                                                                                                                                        |
+| `context`                           | `SonioxContextObject \| str` | `None`        | Customization for transcription. Either a `SonioxContextObject` (structured context for steering transcription and translation) or a plain string of background text. Soniox caps the context object at 8k tokens.                                                                                                                                                                       |
+| `enable_speaker_diarization`        | `bool`                       | `False`       | Enable speaker diarization. Tokens are annotated with speaker IDs.                                                                                                                                                                                                                                                                                                                       |
+| `enable_language_identification`    | `bool`                       | `False`       | Enable language identification. Tokens are annotated with language IDs, and the detected language is included in the final `TranscriptionFrame`.                                                                                                                                                                                                                                         |
+| `max_endpoint_delay_ms`             | `int`                        | `None`        | Maximum delay in milliseconds after speech ends before endpoint detection returns an endpoint. Valid range: 500-3000.                                                                                                                                                                                                                                                                    |
+| `endpoint_sensitivity`              | `float`                      | `None`        | Endpoint detection sensitivity (-1.0 to 1.0); higher values finalize turns sooner, lower values delay finalization. Introduced in the v5 model.                                                                                                                                                                                                                                          |
+| `endpoint_latency_adjustment_level` | `int`                        | `None`        | Reduces endpoint latency vs. the default (0-3); higher values finalize turns sooner but may reduce accuracy.                                                                                                                                                                                                                                                                             |
+| `client_reference_id`               | `str`                        | `None`        | Client reference ID for transcription tracking.                                                                                                                                                                                                                                                                                                                                          |
+| `enable_agent_text_input`           | `bool`                       | `True`        | Send each completed bot reply to Soniox as agent text, so words the bot said are recognized when the user repeats them. Only takes effect on `stt-rt-v6` and later models. Agent text is billed as input text tokens.                                                                                                                                                                    |
+| `enable_echo_cancellation`          | `bool`                       | `False`       | Send the bot's reply to Soniox word by word while it plays, so Soniox lines the words up with the audio and doesn't transcribe the bot's own voice as the user. Implies `enable_agent_text_input`, replacing the per-reply send. Needs a TTS service that reports word timestamps, such as `SonioxTTSService`; without them the text is sent untimed and echo cancellation doesn't work. |
+| `agent_text_lead_ms`                | `int`                        | `700`         | How far ahead of playback each word is sent, in milliseconds. Soniox documents 500-1000; `0` sends each word as it starts playing. Cannot be negative. Only used with `enable_echo_cancellation`.                                                                                                                                                                                        |
 
 ## Usage
 
@@ -52593,7 +52892,7 @@ from pipecat.transcriptions.language import Language
 stt = SonioxSTTService(
     api_key=os.getenv("SONIOX_API_KEY"),
     settings=SonioxSTTService.Settings(
-        model="stt-rt-v5",
+        model="stt-rt-v6",
         language_hints=[Language.EN, Language.ES],
         language_hints_strict=True,
         enable_language_identification=True,
@@ -52613,7 +52912,7 @@ from pipecat.services.soniox.stt import (
 stt = SonioxSTTService(
     api_key=os.getenv("SONIOX_API_KEY"),
     settings=SonioxSTTService.Settings(
-        model="stt-rt-v5",
+        model="stt-rt-v6",
         context=SonioxContextObject(
             general=[
                 SonioxContextGeneralItem(key="domain", value="medical"),
@@ -64163,12 +64462,6 @@ from pipecat.services.heygen.tts import HeyGenHttpTTSService, HeyGenTTSService
   How to aggregate incoming text before synthesis. `None` aggregates sentences.
 </ParamField>
 
-<ParamField path="pause_frame_processing" type="bool" default="True">
-  Whether to hold incoming frames after a turn until its audio has played. With
-  `False`, turns synthesize concurrently on one WebSocket, and HeyGen closes the
-  WebSocket when more than 5 are running.
-</ParamField>
-
 <ParamField path="enable_ssml_parsing" type="bool | None" default="None">
   Whether `<break time="1s" />` tags become pauses. Without it, HeyGen closes
   the WebSocket on a break tag and the turn is lost.
@@ -64247,7 +64540,7 @@ from pipecat.services.heygen.tts import HeyGenTTSService
 tts = HeyGenTTSService(
     api_key=os.getenv("HEYGEN_API_KEY"),
     settings=HeyGenTTSService.Settings(
-        voice=os.getenv("HEYGEN_VOICE_ID"),
+        voice=os.getenv("HEYGEN_VOICE_ID", "83548de556df48ba8c09c42a57c51d85"),
     ),
 )
 ```
@@ -64289,12 +64582,19 @@ await worker.queue_frame(
 
 - **Service choice**: Use `HeyGenTTSService` for the lowest latency and word timestamps. Use `HeyGenHttpTTSService` for professional voice clones, which the WebSocket does not serve.
 - **Regional languages**: HeyGen Voice has no regional accents, so a regional `Language` such as `Language.EN_US` is sent as its base language, `en`. HeyGen's docs list the [supported languages](https://developers.heygen.com/docs/voices/heygen-voice-speech#supported-languages).
-- **Rate limits**: HeyGen limits speech requests per workspace member. `HeyGenHttpTTSService` makes one request per sentence, so a busy bot can reach the limit; a rejected request is pushed as an `ErrorFrame`.
+- **Turbo Free**: `heygen-voice-1-turbo-free` serves instant voices and public voices on both services, on shared capacity with no latency or availability guarantee. When the WebSocket refuses a context for lack of capacity, `HeyGenTTSService` pushes a non-fatal `ErrorFrame` and sends the turn again with exponential backoff, up to 3 times. `HeyGenHttpTTSService` pushes the `ErrorFrame` and does not retry.
+- **Rate limits**: HeyGen limits speech requests per workspace member. `HeyGenHttpTTSService` makes one request per sentence, so a busy bot can reach the limit. `HeyGenTTSService` counts one request per connection and one per turn, and waits as long as a refused connection's `Retry-After` header asks. A refused request is pushed as an `ErrorFrame` carrying HeyGen's error code and request ID.
 
 # Hume Text-to-Speech
 Source: https://docs.pipecat.ai/api-reference/server/services/tts/hume.md
 
 HumeTTSService generates expressive TTS with Hume AI's Octave models: context-aware pitch, speed, emotion, and word timestamps.
+
+<Warning>
+  `HumeTTSService` is deprecated since 1.16.0 and will be removed in 2.0.0. No
+  replacement: Hume shuts down its TTS API on November 13, 2026, after which the
+  service can no longer synthesize speech.
+</Warning>
 
 ## Overview
 
@@ -64588,8 +64888,9 @@ WebSocket-based service for lowest latency streaming.
 >
   Controls how incoming text is aggregated before synthesis. `SENTENCE` (used
   when `None`) buffers text until sentence boundaries, producing more natural
-  speech. `TOKEN` streams tokens directly for lower latency. Import from
-  `pipecat.services.tts_service`.
+  speech. `TOKEN` streams tokens directly for lower latency; with `auto_mode`
+  enabled on an `inworld-tts-2` model, the server splits the streamed tokens at
+  sentence boundaries. Import from `pipecat.services.tts_service`.
 </ParamField>
 
 <ParamField path="aggregate_sentences" type="bool" default="None" deprecated>
@@ -80024,17 +80325,17 @@ The AIC filter enhances audio before it reaches the VAD and STT stages, improvin
 
 #### Migration Steps
 
-1. Update Pipecat to the latest version (aic-sdk v3.3.1+ is included automatically).
+1. Update Pipecat to the latest version (aic-sdk v3.4+ is included automatically).
 2. **Remove deprecated VAD methods**: The `create_vad_analyzer()` and `get_vad_context()` methods have been removed. Use [`AICQuailVADAnalyzer`](/api-reference/server/services/vad/aic-quail-vad-analyzer) for voice activity detection.
 3. Update model selection if needed: The old default `quail-vad-2.0-xxs-16khz` no longer works with aic-sdk 3.0. See [artifacts.ai-coustics.io](https://artifacts.ai-coustics.io/) for current models.
 
 #### Breaking Changes
 
-| v2 Method/Feature       | v3 Replacement                                                                                                   |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `create_vad_analyzer()` | Use `AICQuailVADAnalyzer` (removed in v3)                                                                        |
-| `get_vad_context()`     | Use `AICQuailVADAnalyzer` for VAD (removed in v3)                                                                |
-| Old VAD models          | `quail-vad-2.0-xxs-16khz` no longer works; use `vad-2.1-xxs-16khz` or other models from artifacts.ai-coustics.io |
+| v2 Method/Feature       | v3 Replacement                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `create_vad_analyzer()` | Use `AICQuailVADAnalyzer` (removed in v3)                                                                           |
+| `get_vad_context()`     | Use `AICQuailVADAnalyzer` for VAD (removed in v3)                                                                   |
+| Old VAD models          | `quail-vad-2.0-xxs-16khz` no longer works; use `vad-ms-2.1-xxs-16khz` or other models from artifacts.ai-coustics.io |
 
 ### Migrating from v1 to v2
 
@@ -80066,7 +80367,7 @@ The AIC filter enhances audio before it reaches the VAD and STT stages, improvin
 
 - Requires ai-coustics license key (get one at [developers.ai-coustics.io](https://developers.ai-coustics.io))
 - **Environment variable**: Use `AIC_SDK_LICENSE` (not `AIC_LICENSE_KEY`) for authentication
-- **aic-sdk 3.x required**: Version 3.3.1+ is included in `pipecat-ai[aic]`
+- **aic-sdk 3.x required**: Version 3.4+ is included in `pipecat-ai[aic]`
 - Models are automatically downloaded and cached on first use
 - Supports real-time audio processing with low latency
 - Handles PCM_16 audio format (int16 samples)
@@ -81175,8 +81476,8 @@ uv add "pipecat-ai[aic]"
   [developers.ai-coustics.io](https://developers.ai-coustics.io).
 </ParamField>
 
-<ParamField path="model_id" type="str | None" default='"vad-2.1-xxs-16khz"'>
-  Dedicated VAD model identifier. Defaults to `"vad-2.1-xxs-16khz"`. See
+<ParamField path="model_id" type="str | None" default='"vad-ms-2.1-xxs-16khz"'>
+  Dedicated VAD model identifier. Defaults to `"vad-ms-2.1-xxs-16khz"`. See
   [artifacts.ai-coustics.io](https://artifacts.ai-coustics.io/) for the
   catalogue. Ignored if `model_path` is provided. Enhancement models are
   rejected by the SDK.
@@ -81352,7 +81653,7 @@ aic_vad = AICQuailVADAnalyzer(
 
 | Feature              | AICQuailVADAnalyzer (Recommended)                                    | AICVADAnalyzer (Deprecated, Removed)    |
 | -------------------- | -------------------------------------------------------------------- | --------------------------------------- |
-| **Model**            | Dedicated VAD models (e.g., `vad-2.1-xxs-16khz`)                     | Enhancement model's internal VAD        |
+| **Model**            | Dedicated VAD models (e.g., `vad-ms-2.1-xxs-16khz`)                  | Enhancement model's internal VAD        |
 | **Independence**     | Owns its own VAD instance                                            | Bound to `AICFilter` instance           |
 | **Audio path**       | Processes whatever the pipeline feeds it                             | Reads post-enhancement VAD state        |
 | **Output**           | Continuous raw probability gated by Pipecat's `VADParams.confidence` | Binary speech flag (0.0/1.0)            |
@@ -81367,8 +81668,8 @@ The analyzer can work with or without the AIC enhancement filter, providing flex
 
 - Requires ai-coustics license key (get one at [developers.ai-coustics.io](https://developers.ai-coustics.io))
 - **Environment variable**: Use `AIC_SDK_LICENSE` for authentication
-- **aic-sdk 3.x required**: Version 3.3.1+ is included in `pipecat-ai[aic]`
-- Default model is `vad-2.1-xxs-16khz`, optimized for 16kHz audio
+- **aic-sdk 3.x required**: Version 3.4+ is included in `pipecat-ai[aic]`
+- Default model is `vad-ms-2.1-xxs-16khz`, optimized for 16kHz audio
 - **Model compatibility**: The old default `quail-vad-2.0-xxs-16khz` does not work with aic-sdk 3.0; use models from [artifacts.ai-coustics.io](https://artifacts.ai-coustics.io/)
 - Model is downloaded and cached on first use
 - Works independently of `AICFilter` - can be used with or without audio enhancement
@@ -82641,6 +82942,13 @@ For a walkthrough, see [Pipecat Classifiers](/pipecat/learn/classifiers).
     Answers through Cloudflare's Clef model on Workers AI.
   </Card>
   <Card
+    title="HumeAudioClassifier"
+    icon="waveform-lines"
+    href="/api-reference/server/classifiers/hume-audio"
+  >
+    Answers questions about a clip of audio through Hume's Audio Decisions API.
+  </Card>
+  <Card
     title="OpenAIDecisionsClassifier"
     icon="sparkles"
     href="/api-reference/server/classifiers/openai-decisions"
@@ -82654,6 +82962,14 @@ For a walkthrough, see [Pipecat Classifiers](/pipecat/learn/classifiers).
   >
     Answers through any Pipecat LLM service that supports `run_inference()`.
   </Card>
+  <Card
+    title="PipecatToneClassifier"
+    icon="face-smile"
+    href="/api-reference/server/expressive/pipecat-tone#pipecattoneclassifier"
+  >
+    Answers Pipecat Tone's own emotion, move, sarcasm and backchannel questions
+    on the CPU.
+  </Card>
 </CardGroup>
 
 ```python
@@ -82661,6 +82977,7 @@ from pipecat.classifiers.base_classifier import (
     BaseClassifier,
     ChoiceQuestion,
     ChoiceResult,
+    ClassifierAudio,
     ClassifierError,
     ClassifierImage,
     ScoreQuestion,
@@ -82773,6 +83090,33 @@ results = await classifier.yes_no(
 )
 ```
 
+## Audio
+
+A classifier that can hear takes one clip of audio alongside the state, through the `audio` argument of `ask()`, `yes_no()`, `choice()` and `score()`. Check `supports_audio` to find out whether a classifier can. Each classifier declares the clips it accepts with `min_audio_secs`, `max_audio_secs` and `audio_sample_rate`. A clip outside the accepted length raises `ClassifierError`, and a clip is resampled to `audio_sample_rate` before the classifier gets it.
+
+### ClassifierAudio
+
+A clip of audio the questions can hear.
+
+<ParamField path="audio" type="bytes" required>
+  The clip, as 16-bit mono PCM.
+</ParamField>
+
+<ParamField path="sample_rate" type="int" required>
+  The clip's sample rate in Hz.
+</ParamField>
+
+`duration_secs` returns how long the clip is, in seconds.
+
+```python
+clip = ClassifierAudio(audio=pcm_bytes, sample_rate=16000)
+results = await classifier.yes_no(
+    "A caller on the phone.",
+    {"angry": YesNoQuestion(instructions="Does the caller sound angry?")},
+    audio=clip,
+)
+```
+
 ## Results
 
 ### YesNoResult
@@ -82813,7 +83157,7 @@ result.probability("angry")  # 0.12
 
 ### ClassifierError
 
-Raised when a classifier cannot answer: the backend failed or did not reply in time, its reply could not be turned into results, or it was given images and cannot see them. Every classifier answers or raises within a time bound of its own, so a caller waiting on one is never left hanging.
+Raised when a classifier cannot answer: the backend failed or did not reply in time, its reply could not be turned into results, it was given images and cannot see them, or it was given a clip of audio and cannot hear it or does not accept its length. Every classifier answers or raises within a time bound of its own, so a caller waiting on one is never left hanging.
 
 ## BaseClassifier
 
@@ -82829,20 +83173,21 @@ async def ask(
     questions: Mapping[str, ClassifierQuestion],
     *,
     images: Sequence[ClassifierImage] | None = None,
+    audio: ClassifierAudio | None = None,
 ) -> dict[str, ClassifierResult]
 ```
 
-Answers several questions about one state, in one call. `questions` can mix kinds. Returns one result per question, under the same names, each of the type its question calls for. `images` are images the questions can look at, for a classifier that [supports them](#images). A classifier that cannot see images raises `ClassifierError` when given some.
+Answers several questions about one state, in one call. `questions` can mix kinds. Returns one result per question, under the same names, each of the type its question calls for. `images` are images the questions can look at, for a classifier that [supports them](#images). A classifier that cannot see images raises `ClassifierError` when given some. `audio` is a clip the questions can hear, for a classifier that [supports it](#audio). A classifier that cannot hear raises `ClassifierError` when given one, as does one whose accepted length the clip falls outside of.
 
 #### yes_no, choice, score
 
 ```python
-async def yes_no(state, questions: Mapping[str, YesNoQuestion], *, images=None) -> dict[str, YesNoResult]
-async def choice(state, questions: Mapping[str, ChoiceQuestion], *, images=None) -> dict[str, ChoiceResult]
-async def score(state, questions: Mapping[str, ScoreQuestion], *, images=None) -> dict[str, ScoreResult]
+async def yes_no(state, questions: Mapping[str, YesNoQuestion], *, images=None, audio=None) -> dict[str, YesNoResult]
+async def choice(state, questions: Mapping[str, ChoiceQuestion], *, images=None, audio=None) -> dict[str, ChoiceResult]
+async def score(state, questions: Mapping[str, ScoreQuestion], *, images=None, audio=None) -> dict[str, ScoreResult]
 ```
 
-Typed versions of `ask()` for questions of one kind, taking the same `images`. They return results already typed, so no `isinstance` check is needed.
+Typed versions of `ask()` for questions of one kind, taking the same `images` and `audio`. They return results already typed, so no `isinstance` check is needed.
 
 All four raise `ClassifierError` when the answers could not be produced.
 
@@ -82852,7 +83197,7 @@ All four raise `ClassifierError` when the answers could not be produced.
 async def setup(task_manager: BaseTaskManager)
 ```
 
-An owner that runs inside an agent calls this with its task manager before the first question. `JevClassifier`, `ClefClassifier`, and `OpenAIDecisionsClassifier` also open their connection here, so the first question does not pay for it.
+An owner that runs inside an agent calls this with its task manager before the first question. `JevClassifier`, `ClefClassifier`, `HumeAudioClassifier`, and `OpenAIDecisionsClassifier` also open their connection here, so the first question does not pay for it.
 
 #### cleanup
 
@@ -82864,10 +83209,14 @@ Releases the classifier's resources. Call it when you are done asking.
 
 ### Properties
 
-| Property          | Type          | Description                                                                           |
-| ----------------- | ------------- | ------------------------------------------------------------------------------------- |
-| `model`           | `str \| None` | The model that answers, as named in the metrics.                                      |
-| `supports_images` | `bool`        | Whether questions can come with images. `False` unless the classifier says otherwise. |
+| Property            | Type            | Description                                                                                    |
+| ------------------- | --------------- | ---------------------------------------------------------------------------------------------- |
+| `model`             | `str \| None`   | The model that answers, as named in the metrics.                                               |
+| `supports_images`   | `bool`          | Whether questions can come with images. `False` unless the classifier says otherwise.          |
+| `supports_audio`    | `bool`          | Whether questions can come with a clip of audio. `False` unless the classifier says otherwise. |
+| `min_audio_secs`    | `float`         | The shortest clip the classifier accepts, in seconds. `0.0` by default.                        |
+| `max_audio_secs`    | `float \| None` | The longest clip the classifier accepts, in seconds, or `None` for no limit.                   |
+| `audio_sample_rate` | `int \| None`   | The sample rate clips are resampled to, or `None` to keep their own.                           |
 
 ### Event Handlers
 
@@ -82904,7 +83253,7 @@ class MyProcessor(FrameProcessor):
 
 ## Writing a Classifier
 
-To back classifiers with another model or service, subclass `BaseClassifier` and implement `_ask()`. It receives the state, the questions and the `images` (always empty unless the classifier overrides `supports_images` to return `True`), and returns the results by name, plus the tokens the call used when that is known (or `None`). Raise `ClassifierError` when the backend fails. The public methods, typing and metrics are handled by the base class.
+To back classifiers with another model or service, subclass `BaseClassifier` and implement `_ask()`. It receives the state, the questions and the `images` (always empty unless the classifier overrides `supports_images` to return `True`), and returns the results by name, plus the tokens the call used when that is known (or `None`). A classifier that can hear overrides `supports_audio` and declares the clips it accepts; `_ask()` then also receives `audio`, a clip of an accepted length at `audio_sample_rate`, when there is one. A classifier that cannot hear needs no `audio` parameter. Raise `ClassifierError` when the backend fails. The public methods, typing and metrics are handled by the base class.
 
 ```python
 from pipecat.classifiers.base_classifier import BaseClassifier, ClassifierError
@@ -83112,6 +83461,177 @@ After every call, a `ClefClassifier` reports the time it took as `ProcessingMetr
 - **Images**: a call takes up to 4 images, available as `CLEF_MAX_IMAGES` in `pipecat.classifiers.cloudflare.clef.classifier`, of at most 4 MiB each and 8 MiB in all. More than 4 raises `ClassifierError` before anything is sent.
 - **Errors**: a rejected request, a busy Workers AI after every retry, an unreachable server, or a reply missing an answer all raise `ClassifierError`. The message carries the reason Cloudflare gave, such as `HTTP 401: Authentication error`.
 - **Idle connections** are kept open for 240 seconds, so a gap between questions does not cost a new TLS handshake.
+
+# HumeAudioClassifier
+Source: https://docs.pipecat.ai/api-reference/server/classifiers/hume-audio.md
+
+HumeAudioClassifier and HumeAudioDecisionsClient answer classifier questions about a clip of audio through Hume's Audio Decisions API.
+
+## Overview
+
+`HumeAudioClassifier` answers [classifier questions](/api-reference/server/classifiers/overview) about a clip of audio through Hume's Audio Decisions API. Hume hears the clip, and reads the state as the clip's context, such as who is speaking and what they said. All the questions about one clip go to Hume in one request. Its probabilities estimate the share of human raters who would give each answer.
+
+A `HumeAudioClassifier` asks through a `HumeAudioDecisionsClient`, which holds the HTTP/2 connection, adds the auth header, retries when Hume is busy, and counts tokens. Build the classifier with an API key to give it a client of its own, or pass a `HumeAudioDecisionsClient` to share one connection between several classifiers.
+
+## Installation
+
+```bash
+uv add "pipecat-ai[hume]"
+```
+
+## Prerequisites
+
+A Hume API key, usually set as an environment variable:
+
+```bash
+HUME_API_KEY=...
+```
+
+## Configuration
+
+### HumeAudioClassifier
+
+```python
+from pipecat.classifiers.hume.audio_decisions.classifier import HumeAudioClassifier
+```
+
+<ParamField path="api_key" type="str | None" default="None">
+  Hume API key, when the classifier should have a client of its own. One of
+  `api_key` and `client` is required.
+</ParamField>
+
+<ParamField path="client" type="HumeAudioDecisionsClient | None" default="None">
+  A client to share with other classifiers. One of `api_key` and `client` is
+  required.
+</ParamField>
+
+<ParamField path="base_url" type="str" default="https://api.cloud.hume.ai">
+  Where a client of its own sends its questions.
+</ParamField>
+
+<ParamField path="timeout" type="float" default="10.0">
+  Seconds a client of its own waits for an answer before raising
+  `ClassifierError`.
+</ParamField>
+
+<ParamField path="name" type="str | None" default="None">
+  Name of the classifier, as it appears in logs and metrics.
+</ParamField>
+
+### HumeAudioDecisionsClient
+
+```python
+from pipecat.classifiers.hume.audio_decisions.client import HumeAudioDecisionsClient
+```
+
+<ParamField path="api_key" type="str" required>
+  Hume API key.
+</ParamField>
+
+<ParamField path="base_url" type="str" default="https://api.cloud.hume.ai">
+  Where the API is served.
+</ParamField>
+
+<ParamField path="timeout" type="float" default="10.0">
+  Seconds to wait for a reply before raising `ClassifierError`.
+</ParamField>
+
+<ParamField path="max_retries" type="int" default="2">
+  How many times to retry a request Hume couldn't answer because it was busy
+  (HTTP 429, 500 or 503).
+</ParamField>
+
+## Usage
+
+### Basic Usage
+
+Every question needs a clip. A question asked without one raises `ClassifierError`.
+
+```python
+import os
+
+from pipecat.classifiers.base_classifier import ClassifierAudio, YesNoQuestion
+from pipecat.classifiers.hume.audio_decisions.classifier import HumeAudioClassifier
+
+classifier = HumeAudioClassifier(api_key=os.getenv("HUME_API_KEY"))
+
+clip = ClassifierAudio(audio=pcm_bytes, sample_rate=16000)  # 5 seconds to 5 minutes
+results = await classifier.yes_no(
+    "A caller on the phone.",
+    {"angry": YesNoQuestion(instructions="Does the caller sound angry?")},
+    audio=clip,
+)
+results["angry"].probability
+```
+
+### Reading How the User Sounded
+
+Pass the classifier to a [`PerceptionReader`](/api-reference/server/expressive/overview#perceptionreader), which cuts a clip of the user's speech each time they stop speaking and sets the answers as the transcription's `perception`.
+
+### Sharing a Client
+
+Several classifiers can share one `HumeAudioDecisionsClient`, and with it one connection pool and one token count:
+
+```python
+from pipecat.classifiers.hume.audio_decisions.client import HumeAudioDecisionsClient
+
+client = HumeAudioDecisionsClient(api_key=os.getenv("HUME_API_KEY"))
+first = HumeAudioClassifier(client=client)
+second = HumeAudioClassifier(client=client)
+```
+
+A client the classifier created is closed in the classifier's `cleanup()`. A shared client is left open, so close it yourself with `await client.close()` when every classifier using it is done.
+
+### Opening the Connection Early
+
+`setup()` opens the connection to Hume ahead of the first question. Components that own a classifier, such as `PerceptionReader`, call it for you. If the connection cannot be opened at setup, a warning is logged and the first question opens it instead.
+
+## HumeAudioClassifier Properties
+
+| Property            | Type                       | Description                                                 |
+| ------------------- | -------------------------- | ----------------------------------------------------------- |
+| `client`            | `HumeAudioDecisionsClient` | The client this classifier asks through.                    |
+| `supports_audio`    | `bool`                     | Always `True`: Hume hears audio.                            |
+| `min_audio_secs`    | `float`                    | `5.0`: the shortest clip Hume hears.                        |
+| `max_audio_secs`    | `float`                    | `300.0`: the longest clip Hume hears.                       |
+| `audio_sample_rate` | `int`                      | `16000`: clips are resampled to 16 kHz before they're sent. |
+
+## HumeAudioDecisionsClient Reference
+
+### Properties
+
+| Property | Type                      | Description                                                       |
+| -------- | ------------------------- | ----------------------------------------------------------------- |
+| `usage`  | `HumeAudioDecisionsUsage` | Input tokens billed so far over every request, as `input_tokens`. |
+
+### Methods
+
+#### connect
+
+```python
+await client.connect()
+```
+
+Opens the connection to Hume with a lightweight request that also checks the key. It counts toward the rate limit like any request. It connects once: a client shared by several classifiers is connected by each of them, and only the first call sends anything. Raises `ClassifierError` if Hume could not be reached or refused the request.
+
+#### close
+
+```python
+await client.close()
+```
+
+Closes the connection pool.
+
+## Metrics
+
+After every call, a `HumeAudioClassifier` reports the time it took as `ProcessingMetricsData` and the input tokens used as `LLMUsageMetricsData` through its [`on_metrics`](/api-reference/server/classifiers/overview#on_metrics) event.
+
+## Notes
+
+- **Context**: the state is sent to Hume as the clip's context, as text or as JSON for structured state. Hume reads at most 1000 characters of it, so a longer state keeps its last 1000 characters. The limit is available as `HUME_MAX_CONTEXT` in `pipecat.classifiers.hume.audio_decisions.classifier`.
+- **Audio**: clips are sent as 16 kHz mono WAV, which is how the model hears them.
+- **Images**: `HumeAudioClassifier` cannot see images. Passing some raises `ClassifierError`.
+- **Errors**: a rejected request, a busy Hume after every retry, an unreachable server, or a reply missing an answer all raise `ClassifierError`.
 
 # JevClassifier
 Source: https://docs.pipecat.ai/api-reference/server/classifiers/jev.md
@@ -83638,6 +84158,7 @@ from pipecat.expressive.perception import (
     PerceptionSignal,
     PerceptionTerm,
     format_perception,
+    merge_perception,
 )
 from pipecat.expressive.policy import ExpressionGuidance, ExpressionPolicy
 ```
@@ -83721,6 +84242,53 @@ A breath is offered only with `ExpressionGuidance.BREATHE`.
 
 A perception producer reads how the user spoke each turn and sets it as the transcription's `perception`. The LLM reads it at the head of the user's message, formatted by `format_perception()`.
 
+### PerceptionReader
+
+A perception producer that asks any [classifier](/api-reference/server/classifiers/overview) how the user spoke, and sets the answers as the transcription's `perception`, one signal per question. Goes between the STT service and the user aggregator. Every reading is also broadcast in a `PerceptionFrame` as soon as it's made. A transcription passes unread when its reading is late or the classifier fails. A classifier that can't be set up is reported as an error that leaves the reader unusable.
+
+A text classifier reads each final transcription, with the bot's previous reply. A classifier that can hear, as its `supports_audio` says, such as [`HumeAudioClassifier`](/api-reference/server/classifiers/hume-audio), hears the user's audio each time they stop speaking: their speech, plus the audio heard just before it when the speech is shorter than the classifier's `min_audio_secs`. Audio heard while the user is muted counts as silence. The transcriptions of that speech are held until the speech is read and pushed on together, with the reading, and only the last one is finalized. The STT's `ttfs_p99_latency` is raised by `timeout` so the user's turn waits for them. [`PipecatToneReader`](/api-reference/server/expressive/pipecat-tone#pipecattonereader) is a `PerceptionReader`.
+
+```python
+from pipecat.expressive.processors.perception_reader import PerceptionQuestion, PerceptionReader
+
+reader = PerceptionReader(
+    classifier=JevClassifier(api_key=os.getenv("TYPESAFE_API_KEY")),
+    questions={
+        "frustration": PerceptionQuestion(
+            question=YesNoQuestion(instructions="Is the user frustrated?"),
+            description="The chance the user is frustrated, from 0 to 1.",
+        ),
+    },
+)
+```
+
+<ParamField path="classifier" type="BaseClassifier" required>
+  What answers the questions about each turn.
+</ParamField>
+
+<ParamField path="questions" type="Mapping[str, PerceptionQuestion]" required>
+  The questions, by the name of the signal each reports. Raises `ValueError`
+  when a name has a space or one of `=`, `,`, `[`, `]`, `(` or `)`.
+</ParamField>
+
+<ParamField path="timeout" type="float | None" default="None">
+  Seconds a transcription waits for its reading. By default `0.5` for a text
+  classifier, counted from when the transcription arrives, and `2` for a
+  classifier that hears audio, counted from when the user stops speaking.
+</ParamField>
+
+A `ChoiceQuestion` is reported as labels, a `YesNoQuestion` as its probability, and a `ScoreQuestion` as its position on the scale.
+
+### PerceptionQuestion
+
+One signal a `PerceptionReader` reports.
+
+| Field         | Type                 | Description                                                                               |
+| ------------- | -------------------- | ----------------------------------------------------------------------------------------- |
+| `question`    | `ClassifierQuestion` | What the classifier is asked.                                                             |
+| `description` | `str`                | A short line telling the LLM how to read the signal, such as its range. Defaults to `""`. |
+| `max_labels`  | `int`                | The most labels a choice reports, likeliest first. At least 1. Defaults to `2`.           |
+
 ### PerceptionSignal
 
 One signal of a reading, read either as labels or as a value.
@@ -83755,12 +84323,25 @@ format_perception(signals: list[PerceptionSignal]) -> str
 
 Returns a reading as the LLM reads it: `([emotion angry=0.81, neutral=0.12],[sarcasm value=0.04])`.
 
+### merge_perception
+
+```python
+merge_perception(
+    merged: list[PerceptionSignal] | None, reading: list[PerceptionSignal]
+) -> list[PerceptionSignal]
+```
+
+Merges a reading into the readings of the same turn so far, keeping the higher of each signal. A signal read as a value keeps its highest value. A signal read as labels keeps every label either reading has, each with its highest confidence, likeliest first. A signal only one reading has is kept as it is, and signals stay in the order they were first read. Pass `None` as `merged` before the first reading.
+
+The user aggregator uses it to merge all the final readings of a user turn, so a reading from earlier in the turn still reaches the LLM.
+
 ## Frames
 
 | Frame                                                                        | Field        | Contents                                                                                                                                                                                                |
 | ---------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TTSMetadataFrame`                                                           | `expression` | What the TTS service performs, an [`ExpressionCapabilities`](/api-reference/server/expressive/tts-services#expressioncapabilities), or `None`. Broadcast at start and when a settings change alters it. |
 | `PerceptionMetadataFrame`                                                    | `perception` | The `PerceptionCapabilities` of a perception producer, broadcast at start.                                                                                                                              |
+| `PerceptionFrame`                                                            | `perception` | `list[PerceptionSignal]`: a reading of how the user spoke, broadcast by a perception producer as soon as it's made, before a transcription carries it. A `SystemFrame`.                                 |
 | `ExpressionMetadataFrame`                                                    |              | Broadcast at start by a processor that writes the tags after the LLM, such as `PipecatToneTagger`, so the LLM is taught none.                                                                           |
 | `TranscriptionFrame`, `InterimTranscriptionFrame`, `EagerTranscriptionFrame` | `perception` | `list[PerceptionSignal] \| None`: how the user said the words, when a perception producer read them.                                                                                                    |
 | `TTSTextFrame`                                                               | `delivery`   | `list[str] \| None`: the delivery of the word just spoken, by its universal names, such as `["warm", "emphasis"]`. Empty for the voice's baseline.                                                      |
@@ -83768,7 +84349,7 @@ Returns a reading as the LLM reads it: `([emotion angry=0.81, neutral=0.12],[sar
 
 ## Events
 
-The user aggregator's [`on_user_turn_stopped`](/api-reference/server/utilities/turn-management/turn-events) message carries `perception`, the turn's final reading, or `None` without a perception producer.
+The user aggregator's [`on_user_turn_stopped`](/api-reference/server/utilities/turn-management/turn-events) message carries `perception`, the turn's final readings merged with `merge_perception()`, or `None` without a perception producer.
 
 ## Notes
 
@@ -83898,13 +84479,13 @@ Set the markup apart from the words with spaces, so the word timestamps a servic
 # Pipecat Tone
 Source: https://docs.pipecat.ai/api-reference/server/expressive/pipecat-tone.md
 
-Reference for PipecatToneReader, which reads how each user turn was meant, and PipecatToneTagger, which writes tags for the LLM.
+Reference for PipecatToneReader, which reads how each user turn was meant, PipecatToneClassifier, and PipecatToneTagger, which writes tags for the LLM.
 
 ## Overview
 
 Pipecat Tone is two small models for [expressive conversation](/api-reference/server/expressive/overview) that run on the CPU:
 
-- [`PipecatToneReader`](#pipecattonereader) reads how each user turn was meant from its words, a perception producer that tells the LLM how the user sounded.
+- [`PipecatToneReader`](#pipecattonereader) reads how each user turn was meant from its words, a perception producer that tells the LLM how the user sounded. [`PipecatToneClassifier`](#pipecattoneclassifier) puts the same model behind the [classifier](/api-reference/server/classifiers/overview) interface.
 - [`PipecatToneTagger`](#pipecattonetagger) writes the expression tags for the LLM's plain replies, a sentence at a time.
 
 For a walkthrough, see [Expressive Conversation](/pipecat/features/expressive-conversation).
@@ -83934,10 +84515,10 @@ uv add "pipecat-ai[tone]"
 
 ## PipecatToneReader
 
-Reads each final user transcription, with the bot's reply before it, and sets the reading as the transcription's `perception`. Goes between the STT service and the user aggregator. A read takes a few milliseconds, and the transcription waits for it.
+Reads each final user transcription, with the bot's reply before it, and sets the reading as the transcription's `perception`. Goes between the STT service and the user aggregator. A read takes a few milliseconds, and the transcription waits for it, up to `timeout` seconds. It is a [`PerceptionReader`](/api-reference/server/expressive/overview#perceptionreader) that asks a `PipecatToneClassifier` its `emotion` and `sarcasm` questions. With metrics enabled, it pushes the classifier's processing metrics.
 
 ```python
-from pipecat.processors.tone.reader import PipecatToneReader
+from pipecat.expressive.processors.tone_reader import PipecatToneReader
 ```
 
 ### Configuration
@@ -83960,6 +84541,11 @@ from pipecat.processors.tone.reader import PipecatToneReader
   The CPU threads for one read.
 </ParamField>
 
+<ParamField path="timeout" type="float | None" default="None">
+  Seconds a transcription waits for its reading, `0.5` by default. After that it
+  passes unread.
+</ParamField>
+
 ### Signals
 
 | Signal    | Read as | Reading                                                                                                              |
@@ -83969,6 +84555,40 @@ from pipecat.processors.tone.reader import PipecatToneReader
 
 The LLM reads them as `([emotion angry=0.81, neutral=0.12],[sarcasm value=0.04])` at the head of the user's message, and is taught what each signal means. The emotion labels are the model's: see its model card.
 
+## PipecatToneClassifier
+
+A [classifier](/api-reference/server/classifiers/overview) backed by the reader model. It answers only the questions built into the model, listed in `questions`, and any other question raises `ClassifierError`. `setup()` loads the model, and `questions` raises `ClassifierError` until then.
+
+```python
+from pipecat.classifiers.tone.classifier import PipecatToneClassifier
+```
+
+### Configuration
+
+Takes the same `revision`, `model_dir`, `precision` and `threads` as [`PipecatToneReader`](#configuration).
+
+### Questions
+
+| Question      | Kind             | Asks                                                                                   |
+| ------------- | ---------------- | -------------------------------------------------------------------------------------- |
+| `emotion`     | `ChoiceQuestion` | Which feeling the turn's words show, among the model's emotions.                       |
+| `move`        | `ChoiceQuestion` | What the turn does in the conversation, among the model's moves.                       |
+| `sarcasm`     | `YesNoQuestion`  | Whether the turn is sarcastic.                                                         |
+| `backchannel` | `YesNoQuestion`  | Whether the turn is only a listening sound, such as "mhm", that doesn't take the turn. |
+
+The state is the turn's text, or `{"user": ..., "assistant": ...}` to read it with the bot's words before it. Any other state raises `ClassifierError`.
+
+```python
+classifier = PipecatToneClassifier()
+await classifier.setup(task_manager)
+
+results = await classifier.ask(
+    {"assistant": "Your next visit is in forty minutes.", "user": "Oh great."},
+    classifier.questions,
+)
+sarcastic = results["sarcasm"].probability
+```
+
 ## PipecatToneTagger
 
 Labels each sentence of the LLM's reply with the call so far, how the user sounded and the pipeline's expression policy, and sends it on with tags the TTS service performs. Goes between the LLM and the TTS service. A sentence takes about 15 milliseconds with the `17m` model, and waits for it.
@@ -83976,7 +84596,7 @@ Labels each sentence of the LLM's reply with the call so far, how the user sound
 At start, the tagger broadcasts an `ExpressionMetadataFrame`, so the LLM is taught no tags, writes plain words, and the context keeps its replies plain.
 
 ```python
-from pipecat.processors.tone.tagger import PipecatToneTagger
+from pipecat.expressive.processors.tone_tagger import PipecatToneTagger
 ```
 
 ### Configuration
@@ -87222,6 +87842,7 @@ Pipecat provides several built-in observers:
 - **TranscriptionLogObserver**: Logs speech-to-text transcription events
 - **RTVIObserver**: Converts internal frames to RTVI protocol messages for server to client messaging
 - **[AICTytoObserver](/api-reference/server/utilities/observers/aic-tyto-observer)**: Scores the quality of the user's audio with the ai-coustics Tyto model
+- **[BotSpeechObserver](/api-reference/server/utilities/observers/bot-speech-observer)**: Reports the text the bot will speak, and when its speech ends or is interrupted
 - **[ServiceMetricsObserver](/api-reference/server/utilities/observers/service-metrics-observer)**: Reports service latency and usage metrics as structured records
 - **[StartupTimingObserver](/api-reference/server/utilities/observers/startup-timing-observer)**: Measures processor startup times and transport readiness
 - **[UserBotLatencyObserver](/api-reference/server/utilities/observers/user-bot-latency-observer)**: Measures user-to-bot response latency
@@ -87350,7 +87971,7 @@ from pipecat.observers.aic_tyto_observer import AICTytoObserver
   ai-coustics SDK license key.
 </ParamField>
 
-<ParamField path="model_id" type="str | None" default='"tyto-1.1-l-16khz"'>
+<ParamField path="model_id" type="str | None" default='"tyto-1.2-l-16khz"'>
   Tyto model identifier. Ignored if `model_path` is set. See
   [artifacts.ai-coustics.io](https://artifacts.ai-coustics.io/) for available
   models.
@@ -87398,7 +88019,7 @@ from pipecat.transports.daily.transport import DailyParams, DailyTransport
 
 aic_filter = AICFilter(
     license_key=os.environ["AIC_SDK_LICENSE"],
-    model_id="quail-vf-2.2-l-16khz",
+    model_id="quail-vf-2.3-l-16khz",
 )
 
 transport = DailyTransport(
@@ -87470,6 +88091,57 @@ All scores are in the range `0.0` to `1.0`. A higher value means more problemati
 | `degraded_threshold` | `float`                 | `risk_score` value at or above which a window counts as degraded.                                                                                          |
 | `degraded_fraction`  | `float`                 | Fraction of windows that are degraded.                                                                                                                     |
 | `dominant_dimension` | `str`                   | Name of the score with the highest mean, excluding `risk_score` and `speaker_loudness`. It shows the largest degradation, not the cause of the risk score. |
+
+# Bot Speech Observer
+Source: https://docs.pipecat.ai/api-reference/server/utilities/observers/bot-speech-observer.md
+
+BotSpeechObserver reports the text the bot will speak as the TTS service produces it, and when the bot's speech ends or is interrupted.
+
+## Overview
+
+`BotSpeechObserver` reports each piece of text the bot will speak, as the TTS service produces it and ahead of playback, and the end of the bot's speech with whether it was interrupted.
+
+A TTS service that reports word timestamps produces one word at a time, each with a presentation timestamp (`pts`) saying when its audio is due at the transport. A service that doesn't produces text in the pieces it generates, often a sentence, with no `pts`. Expression sounds and pauses are left out, since the bot doesn't say them as words. After an interruption, text of the cut-off reply is left out until the TTS service starts its next reply. Uninterruptible text plays on, so it is still reported.
+
+## Events
+
+Both handlers run in order on the observer's task, so they need to be fast.
+
+| Event                 | Arguments                         | Description                                                                                                                                                                           |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `on_bot_text`         | `observer`, `frame: TTSTextFrame` | Called for each piece of text the bot will speak.                                                                                                                                     |
+| `on_bot_speech_ended` | `observer`, `interrupted: bool`   | Called once after the text reported since it was last called, when the bot stops speaking or is interrupted. After an interrupted end, text reported earlier may not have been heard. |
+
+## Usage
+
+```python
+from pipecat.frames.frames import TTSTextFrame
+from pipecat.observers.bot_speech_observer import BotSpeechObserver
+from pipecat.pipeline.worker import PipelineWorker
+
+observer = BotSpeechObserver()
+
+@observer.event_handler("on_bot_text")
+async def on_bot_text(observer, frame: TTSTextFrame):
+    logger.info(f"Bot will say: {frame.text}")
+
+@observer.event_handler("on_bot_speech_ended")
+async def on_bot_speech_ended(observer, interrupted: bool):
+    logger.info(f"Bot speech ended (interrupted={interrupted})")
+
+worker = PipelineWorker(
+    pipeline,
+    observers=[observer],
+)
+```
+
+## Configuration
+
+### Constructor Parameters
+
+<ParamField path="**kwargs" type="Any">
+  Additional arguments passed to the parent `BaseObserver`.
+</ParamField>
 
 # Debug Log Observer
 Source: https://docs.pipecat.ai/api-reference/server/utilities/observers/debug-observer.md
@@ -92025,7 +92697,7 @@ async def on_wake_phrase_timeout(strategy):
 
 ### KrispVivaIPUserTurnStartStrategy
 
-Uses Krisp's Interruption Prediction (IP) model to distinguish genuine user interruptions from backchannels (e.g., "uh-huh", "yeah"). When VAD detects user speech, this strategy feeds audio frames into the Krisp VIVA IP model, which outputs a probability indicating whether the speech is a genuine interruption. A user turn is triggered only when this probability exceeds the configured threshold.
+Uses Krisp's Interruption Prediction (IP) model to distinguish genuine user interruptions from backchannels (e.g., "uh-huh", "yeah"). When VAD detects user speech, this strategy feeds audio frames into the Krisp VIVA IP model, which outputs a probability indicating whether the speech is a genuine interruption. While the bot is speaking, a user turn is triggered only when this probability exceeds the configured threshold. With `krisp_audio` 1.14.0 or newer, the strategy tracks whether the bot is speaking: while it isn't, there is nothing to filter, so a user turn starts as soon as VAD detects speech. If the user is already speaking, with no decision made yet, when the bot stops, the turn starts then. Earlier `krisp_audio` versions classify every speech start with the model.
 
 This strategy is designed to work alongside other start strategies (e.g., `TranscriptionUserTurnStartStrategy` as a fallback).
 
@@ -92212,7 +92884,8 @@ To shift the timing further, subclass it and override `report_user_turn_stopped(
 
 <ParamField path="timeout" type="float" default="0.5">
   A short delay in seconds used to handle consecutive or slightly delayed
-  transcriptions.
+  transcriptions. A finalized transcription arriving after the stop signal ends
+  the turn at once, without waiting.
 </ParamField>
 
 <ParamField path="wait_for_transcript" type="bool" default="True">
@@ -109966,6 +110639,52 @@ async def bot(args: SmallWebRTCSessionArguments):
 Subclasses `pipecat-ai`'s `SmallWebRTCRunnerArguments`, so it carries that
 type's fields alongside `session_id`.
 
+## MOQSessionArguments
+
+Session arguments for a [Media over QUIC](/pipecat-cloud/guides/moq) session,
+which the agent's transport uses to dial the relay in its region.
+
+```python
+from pipecatcloud.agent import MOQSessionArguments
+
+async def bot(args: MOQSessionArguments):
+    print(f"Session ID: {args.session_id}")
+    print(f"Namespace: {args.namespace}")
+```
+
+Subclasses `pipecat-ai`'s `MOQRunnerArguments`, so `create_transport` takes its
+`"moq"` entry for it. MoQ on Pipecat Cloud needs `pipecat-ai[moq]` 1.13.0 or
+newer. With a `pipecat-ai` older than 1.12.0, `MOQSessionArguments` doesn't
+exist and importing it raises `ImportError`.
+
+### Properties
+
+<ParamField path="session_id" type="Optional[str]">
+  The unique identifier for the current session.
+</ParamField>
+
+<ParamField path="relay_url" type="str | None">
+  The relay URL the bot dials, with the session's credential in its query
+  string. It is kept out of the object's `repr`; keep it out of your logs too.
+</ParamField>
+
+<ParamField path="namespace" type="str">
+  Scopes the session: the bot publishes under `<namespace>/<participant_id>`
+  and subscribes to `<namespace>/<peer_id>`.
+</ParamField>
+
+<ParamField path="participant_id" type="str">
+  The bot's participant ID, `response` on Pipecat Cloud.
+</ParamField>
+
+<ParamField path="peer_id" type="str">
+  The browser's participant ID, `request` on Pipecat Cloud.
+</ParamField>
+
+<ParamField path="body" type="Any">
+  The custom data passed to the agent via the session parameters.
+</ParamField>
+
 ## SessionArguments
 
 The base type the others share. It contributes `session_id` and serves as a
@@ -110147,7 +110866,7 @@ except InvalidError as e:
 # Examples
 Source: https://docs.pipecat.ai/api-reference/pipecat-cloud/sdk-reference/examples.md
 
-Common Pipecat Cloud Python SDK patterns: starting an agent session, and writing bot() entry points for Daily and WebSocket.
+Common Pipecat Cloud Python SDK patterns: starting an agent session, and writing bot() entry points for Daily, WebSocket and MoQ.
 
 This page provides examples of common tasks with the Pipecat Cloud Python SDK.
 
@@ -110242,6 +110961,36 @@ async def bot(args: WebSocketRunnerArguments):
         logger.info("WebSocket bot process completed")
     except Exception as e:
         logger.exception(f"Error in WebSocket bot process: {str(e)}")
+        raise
+```
+
+## Building a Bot Entry Point with MoQ Arguments
+
+Needs `pipecat-ai[moq]` 1.13.0 or newer; see [Media over QUIC](/pipecat-cloud/guides/moq).
+
+```python
+from loguru import logger
+from pipecat.runner.utils import create_transport
+from pipecat.transports.moq.transport import MOQParams
+from pipecatcloud.agent import MOQSessionArguments
+
+async def bot(args: MOQSessionArguments):
+    """Main bot entry point for Media over QUIC (MoQ) sessions.
+
+    Args:
+        args: The session's relay URL, namespace and participant IDs
+    """
+    logger.info(f"MoQ bot process initialized for session {args.session_id}")
+
+    try:
+        transport = await create_transport(
+            args,
+            {"moq": lambda: MOQParams(audio_in_enabled=True, audio_out_enabled=True)},
+        )
+        await main(transport, args.body)
+        logger.info("MoQ bot process completed")
+    except Exception as e:
+        logger.exception(f"Error in MoQ bot process: {str(e)}")
         raise
 ```
 
@@ -111946,7 +112695,8 @@ pipecat cloud agent list [OPTIONS]
 
 <ParamField path="--region / -r" type="string">
   Filter agents by region. Only agents deployed in the specified region will be
-  shown. If not provided, agents from all regions are listed.
+  shown. If not provided, agents from all regions are listed. Must be a region
+  of the organization in use.
 </ParamField>
 
 ## sessions
@@ -112878,7 +113628,7 @@ See [Agent Profiles](/pipecat-cloud/fundamentals/deploy#agent-profiles) for more
 <ParamField path="--region / -r" type="string">
   Region where the agent will be deployed. If not specified, uses your
   organization's default region (typically `us-west`). Choose a region close to
-  your users for optimal latency.
+  your users for optimal latency. Must be a region of the organization in use.
 </ParamField>
 
 <ParamField path="--force / -f" type="boolean" default="false">
@@ -113781,12 +114531,17 @@ pipecat cloud secrets list [ARGS] [OPTIONS]
 
 <ParamField path="--region / -r" type="string">
   Filter secrets by region. Only secrets in the specified region will be shown.
-  If not provided, secrets from all regions are listed.
+  If not provided, secrets from all regions are listed. Must be a region of the
+  organization in use.
 </ParamField>
 
 ## set
 
 Create or update a secret set with the given name and key-value pairs. Secrets can be passed directly as key value pairs or loaded from a file.
+
+Several values are written in one request, which the API applies whole or not at all: if the write fails, none of them is stored. Before writing, the command asks you to confirm and shows each key with a fixed mask in place of its value. Without `--skip` and without a terminal, as in CI, it exits 2 before showing any keys.
+
+If the API answers a write with a 503 and a `Retry-After` of up to 30 seconds, the command waits and retries, up to 3 times. A 503 without a usable `Retry-After`, a `Retry-After` above 30 seconds, and other errors are not retried. A write that ends in a 503 may still have reached the region, unless the error says nothing was stored; running the same command again settles it. After any other error, fix it first.
 
 **Usage:**
 
@@ -113842,7 +114597,8 @@ pipecat cloud secrets set my-secrets --file .env
 <ParamField path="--region / -r" type="string">
   Region where the secret set will be stored. If not specified, uses your
   organization's default region (typically `us-west`). Secrets must be in the
-  same region as the agents that use them.
+  same region as the agents that use them. Must be a region of the organization
+  in use.
 </ParamField>
 
 **Example:**
@@ -113853,9 +114609,42 @@ Create a secret set in a specific region:
 pipecat cloud secrets set my-secrets API_KEY=abc123 --region eu-central
 ```
 
+## keys
+
+Show your organization's secret keys in a region: each key's fingerprint, state, created and retired times, and how many fields and sets it holds. The fingerprint is the one a security notice names and, in a self-hosted region, the one your cluster shows for the key. Key material is never shown. With `--output json`, prints the full response as JSON.
+
+A key's state is `active` (new values go to it), `pending` (made, not used yet), `retired` (takes no new values and still opens the ones it holds), `compromised`, `destroying`, or `destroyed`. The **Region reports** column is the state the region itself reports, which can also be `missing`.
+
+The command exits 1 if the region is invalid, if the API refuses the request, or if the API does not offer key listing yet.
+
+**Usage:**
+
+```shell
+pipecat cloud secrets keys --region [REGION] [OPTIONS]
+```
+
+**Options:**
+
+<ParamField path="--region / -r" type="string" required>
+  Region to show the keys of.
+</ParamField>
+
+<ParamField path="--organization / -o" type="string">
+  Organization the keys belong to. If not provided, uses the current
+  organization from your configuration.
+</ParamField>
+
+**Example:**
+
+```shell
+pipecat cloud secrets keys --region us-west --output json
+```
+
 ## unset
 
 Removes a specific secret key from a secret set.
+
+Like `set`, it waits and retries a 503 with a `Retry-After` of up to 30 seconds, up to 3 times. If a retry finds the key already gone, the attempt before it removed the key, and the command reports it deleted.
 
 **Usage:**
 
@@ -113932,7 +114721,7 @@ base64-encodes them, and securely stores them. These credentials are used with
 the [deploy](./deploy) command when pulling images from private repositories. If
 a secret with the same name already exists, its credentials will be updated in
 place. If you don't provide credentials directly, the command will prompt you for
-input.
+input. Like `set`, it waits and retries a 503 with a `Retry-After` of up to 30 seconds, up to 3 times.
 
 **Usage:**
 
@@ -113984,7 +114773,8 @@ pipecat cloud secrets image-pull-secret my-registry-creds https://index.docker.i
 <ParamField path="--region / -r" type="string">
   Region where the image pull secret will be stored. If not specified, uses your
   organization's default region (typically `us-west`). Image pull secrets must
-  be in the same region as the agents that use them.
+  be in the same region as the agents that use them. Must be a region of the
+  organization in use.
 </ParamField>
 
 **Examples:**
@@ -114019,7 +114809,7 @@ pipecat cloud secrets reference [NAME] --region [REGION]
 
 <ParamField path="--region / -r" type="string" required>
   The self-hosted region containing the Secret. Required; Daily-hosted regions
-  are rejected.
+  are rejected. Must be a region of the organization in use.
 </ParamField>
 
 <ParamField path="--organization / -o" type="string">

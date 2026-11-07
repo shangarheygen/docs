@@ -55,11 +55,12 @@ Audio filters reduce background noise and isolate the speaker's voice in the inp
 
 Classifiers answer typed questions about some state, such as whether a call reached voicemail or which element on screen the user means. See [Pipecat Classifiers](/pipecat/learn/classifiers).
 
-| Classifier                                     | Setup                             | Maintainer |
-| ---------------------------------------------- | --------------------------------- | ---------- |
-| [Clef](/api-reference/server/classifiers/clef) | `uv add "pipecat-ai[cloudflare]"` | Pipecat    |
-| [Jev](/api-reference/server/classifiers/jev)   | `uv add "pipecat-ai[typesafe]"`   | Pipecat    |
-| [LLM](/api-reference/server/classifiers/llm)   | Built in                          | Pipecat    |
+| Classifier                                                 | Setup                             | Maintainer |
+| ---------------------------------------------------------- | --------------------------------- | ---------- |
+| [Clef](/api-reference/server/classifiers/clef)             | `uv add "pipecat-ai[cloudflare]"` | Pipecat    |
+| [Hume Audio](/api-reference/server/classifiers/hume-audio) | `uv add "pipecat-ai[hume]"`       | Pipecat    |
+| [Jev](/api-reference/server/classifiers/jev)               | `uv add "pipecat-ai[typesafe]"`   | Pipecat    |
+| [LLM](/api-reference/server/classifiers/llm)               | Built in                          | Pipecat    |
 
 ## Composite Services
 
@@ -187,6 +188,7 @@ Serializers convert between frames and media streams, enabling real-time communi
 | [Exotel](/api-reference/server/services/serializers/exotel)         | Built in                    | Pipecat    |
 | [FreeSWITCH](/api-reference/server/services/serializers/freeswitch) | `uv add pipecat-freeswitch` | Community  |
 | [Genesys](/api-reference/server/services/serializers/genesys)       | Built in                    | Pipecat    |
+| [jambonz](/api-reference/server/services/serializers/jambonz)       | Built in                    | Pipecat    |
 | [Plivo](/api-reference/server/services/serializers/plivo)           | Built in                    | Pipecat    |
 | [Telnyx](/api-reference/server/services/serializers/telnyx)         | Built in                    | Pipecat    |
 | [Twilio](/api-reference/server/services/serializers/twilio)         | Built in                    | Pipecat    |
@@ -269,7 +271,7 @@ Text-to-Speech services receive text input and output audio streams or chunks.
 | [Groq](/api-reference/server/services/tts/groq)                   | `uv add "pipecat-ai[groq]"`                                                           | Pipecat    |
 | [Hakim](/api-reference/server/services/tts/hakim)                 | `uv pip install git+https://github.com/tryHakimAI/hakim-pipecat.git`                  | Community  |
 | [HeyGen](/api-reference/server/services/tts/heygen)               | `uv add pipecat-ai`                                                                   | Pipecat    |
-| [Hume](/api-reference/server/services/tts/hume)                   | `uv add "pipecat-ai[hume]"`                                                           | Pipecat    |
+| [Hume](/api-reference/server/services/tts/hume) (deprecated)      | `uv add "pipecat-ai[hume]"`                                                           | Pipecat    |
 | [Inworld](/api-reference/server/services/tts/inworld)             | `uv add "pipecat-ai[inworld]"`                                                        | Pipecat    |
 | [Kalpa](/api-reference/server/services/tts/kalpa)                 | `uv add pipecat-kalpa`                                                                | Community  |
 | [Kokoro](/api-reference/server/services/tts/kokoro)               | `uv add "pipecat-ai[kokoro]"`                                                         | Pipecat    |

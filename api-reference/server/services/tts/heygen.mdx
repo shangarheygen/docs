@@ -97,12 +97,6 @@ from pipecat.services.heygen.tts import HeyGenHttpTTSService, HeyGenTTSService
   How to aggregate incoming text before synthesis. `None` aggregates sentences.
 </ParamField>
 
-<ParamField path="pause_frame_processing" type="bool" default="True">
-  Whether to hold incoming frames after a turn until its audio has played. With
-  `False`, turns synthesize concurrently on one WebSocket, and HeyGen closes the
-  WebSocket when more than 5 are running.
-</ParamField>
-
 <ParamField path="enable_ssml_parsing" type="bool | None" default="None">
   Whether `<break time="1s" />` tags become pauses. Without it, HeyGen closes
   the WebSocket on a break tag and the turn is lost.
@@ -181,7 +175,7 @@ from pipecat.services.heygen.tts import HeyGenTTSService
 tts = HeyGenTTSService(
     api_key=os.getenv("HEYGEN_API_KEY"),
     settings=HeyGenTTSService.Settings(
-        voice=os.getenv("HEYGEN_VOICE_ID"),
+        voice=os.getenv("HEYGEN_VOICE_ID", "83548de556df48ba8c09c42a57c51d85"),
     ),
 )
 ```
@@ -223,4 +217,5 @@ await worker.queue_frame(
 
 - **Service choice**: Use `HeyGenTTSService` for the lowest latency and word timestamps. Use `HeyGenHttpTTSService` for professional voice clones, which the WebSocket does not serve.
 - **Regional languages**: HeyGen Voice has no regional accents, so a regional `Language` such as `Language.EN_US` is sent as its base language, `en`. HeyGen's docs list the [supported languages](https://developers.heygen.com/docs/voices/heygen-voice-speech#supported-languages).
-- **Rate limits**: HeyGen limits speech requests per workspace member. `HeyGenHttpTTSService` makes one request per sentence, so a busy bot can reach the limit; a rejected request is pushed as an `ErrorFrame`.
+- **Turbo Free**: `heygen-voice-1-turbo-free` serves instant voices and public voices on both services, on shared capacity with no latency or availability guarantee. When the WebSocket refuses a context for lack of capacity, `HeyGenTTSService` pushes a non-fatal `ErrorFrame` and sends the turn again with exponential backoff, up to 3 times. `HeyGenHttpTTSService` pushes the `ErrorFrame` and does not retry.
+- **Rate limits**: HeyGen limits speech requests per workspace member. `HeyGenHttpTTSService` makes one request per sentence, so a busy bot can reach the limit. `HeyGenTTSService` counts one request per connection and one per turn, and waits as long as a refused connection's `Retry-After` header asks. A refused request is pushed as an `ErrorFrame` carrying HeyGen's error code and request ID.
